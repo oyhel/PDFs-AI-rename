@@ -1,5 +1,9 @@
 # PDFs-AI-rename
 
+> **We've transformed this open-source project into a user-friendly product that's ready to use instantly. For an easy AI-powered file management solution, visit [riffo.ai](https://riffo.ai). Our platform offers enhanced functionality with a simpler interface, making it accessible to everyone.**
+
+> Check out [riffo.ai](https://riffo.ai) to see how we've streamlined your document organization process.
+
 Imagine you have a folder full of PDF documents, and you're looking for a quick and creative way to rename them. This Python script is designed to help you do just that! It's like having a personal assistant who reads through your PDFs and suggests new, concise names for each file.
 
 Here's how it works:
