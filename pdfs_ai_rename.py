@@ -11,9 +11,27 @@ max_length = 15000
 
 def get_new_filename_from_openai(pdf_content):
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo-0125",
+        model="gpt-4o",
+        #messages=[
+        #    {"role": "system", "content": "You are a helpful assistant designed to output JSON. \
+        #      You are renaming PDF files to help an accountant. Please scan the content of the pdf \
+        #      and rename the files using the follwing format: <date of purchase>_<name of company that sold the product>_<what was purchased> \
+        #      reply with a filename that consists only of English characters, numbers, and underscores, \
+        #     and is no longer than 150 characters. Do not include characters outside of these, as the \
+        #     system may crash. Do not reply in JSON format, just reply with text. The date should be in the format of YYYY-MM-DD. \
+        #     Note that the product is either in Norwegian or English. If there are more than one product and you are not \
+        #     able to find out what was purchased, return the date and company."},
+        #    {"role": "user", "content": pdf_content}
+        #]
         messages=[
-            {"role": "system", "content": "You are a helpful assistant designed to output JSON. Please reply with a filename that consists only of English characters, numbers, and underscores, and is no longer than 50 characters. Do not include characters outside of these, as the system may crash. Do not reply in JSON format, just reply with text."},
+            {"role": "system", "content": "Du er en hjelpsom assistent deisgnet for å returnere JSON output. Du hjelper en en regnskapsfører med å endre navn på PDF-filer \
+             som inneholder kvitteringer fra diverse kjøp. Vennligst les gjennom PDF-filen og endre navn på filen. Filnavnet skal være \
+             på formen <dato for kjøp>_<firma som solgte varen>_<hva som ble kjøpt>. \
+             Svar på forespørselen med et filnavn som kun inneholder bokstaver fra det engelske alfabetet, tall og understrek. \
+             Filnavnet skal ikke være lenger enn 150 tegn. Ikke inkluder tegn utover disse. \
+             Ikke svar med JSON format, svar kun med tekst. Dato skal være på formen YYYY-MM-DD. \
+             Hvis det er flere enn ett produkt på kvitteringen, velg en kategori som innebefatter flest av disse produktene.\
+             Merk at kvitteringene hovedsakelig skal være fra året 2024."},
             {"role": "user", "content": pdf_content}
         ]
     )
@@ -43,6 +61,7 @@ def rename_pdfs_in_directory(directory):
             filepath = os.path.join(directory, filename)
             print(f"Reading file {filepath}")
             pdf_content = pdfs_to_text_string(filepath)
+            print(f"CONTENT IS: {pdf_content}")
             new_file_name = get_new_filename_from_openai(pdf_content)
             if new_file_name in [f for f in os.listdir(directory) if f.endswith(".pdf")]:
                 print(f"The new filename '{new_file_name}' already exists.")
