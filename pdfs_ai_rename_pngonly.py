@@ -13,8 +13,12 @@ import tiktoken
 API_KEY = os.environ.get("OPENAI_API_KEY")
 MAX_LENGTH = 15000
 
+# GPT-4o pricing (as of June 2024, update as needed)
+COST_PER_1K_INPUT_TOKENS = 0.005
+COST_PER_1K_OUTPUT_TOKENS = 0.015
 
-def get_new_filename_from_openai(pdf_content):
+
+def get_new_filename_from_openai(pdf_content, verbose=False):
     """
     Uses GPT-4o to suggest a new filename from extracted PDF text.
     """
@@ -37,12 +41,32 @@ def get_new_filename_from_openai(pdf_content):
         ],
     }
 
+    start_time = time.time()
     response = requests.post(
         "https://api.openai.com/v1/chat/completions", headers=headers, json=payload
     )
+    elapsed = time.time() - start_time
     response_json = response.json()
     initial_filename = response_json["choices"][0]["message"]["content"].strip()
-    return validate_and_trim_filename(initial_filename)
+    validated_filename = validate_and_trim_filename(initial_filename)
+
+    # Verbose info
+    if verbose:
+        usage = response_json.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+        input_cost = (input_tokens / 1000) * COST_PER_1K_INPUT_TOKENS
+        output_cost = (output_tokens / 1000) * COST_PER_1K_OUTPUT_TOKENS
+        total_cost = input_cost + output_cost
+        print(f"[VERBOSE] Filename query:")
+        print(f"  Input tokens: {input_tokens}")
+        print(f"  Output tokens: {output_tokens}")
+        print(f"  Total tokens: {total_tokens}")
+        print(f"  Time consumed: {elapsed:.2f} seconds")
+        print(f"  Estimated cost: ${total_cost:.6f}")
+
+    return validated_filename
 
 
 def validate_and_trim_filename(initial_filename):
@@ -52,7 +76,7 @@ def validate_and_trim_filename(initial_filename):
     return cleaned_filename[:100] if len(cleaned_filename) > 100 else cleaned_filename
 
 
-def rename_pdfs_in_directory(directory):
+def rename_pdfs_in_directory(directory, verbose=False):
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
     files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
 
@@ -62,7 +86,7 @@ def rename_pdfs_in_directory(directory):
             print(f"Processing file: {filepath}")
             pdf_content = pdfs_to_text_string(filepath)
             print(f"CONTENT PREVIEW: {pdf_content[:200]}...")
-            new_file_name = get_new_filename_from_openai(pdf_content)
+            new_file_name = get_new_filename_from_openai(pdf_content, verbose=verbose)
 
             if not new_file_name:
                 print(f"Skipping {filename}: no valid info for renaming.")
@@ -176,6 +200,7 @@ def main():
     parser.add_argument(
         "-d", "--duplicates", action="store_true", help="Find identical files in the folder"
     )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
     # No need to add -h manually; argparse does this automatically
 
     args = parser.parse_args()
@@ -187,7 +212,7 @@ def main():
     if args.duplicates:
         find_identical_files(directory)
     else:
-        rename_pdfs_in_directory(directory)
+        rename_pdfs_in_directory(directory, verbose=args.verbose)
 
 
 if __name__ == "__main__":
