@@ -166,28 +166,55 @@ def content_token_cut(content, num_tokens, max_length):
     return content
 
 
-def find_identical_files(directory):
+def find_identical_files(directory, delete_mode=False):
     """
-    Finds and lists pairs of identical files in the given directory, regardless of filename.
+    Finds and lists groups of identical files in the given directory, regardless of filename.
+    If delete_mode is True, lets the user select which file to keep and deletes the others.
     """
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
     hash_dict = {}
-    identical_pairs = []
+    duplicates = {}
 
     for filename in files:
         filepath = os.path.join(directory, filename)
         with open(filepath, "rb") as f:
             file_hash = hashlib.md5(f.read()).hexdigest()
         if file_hash in hash_dict:
-            identical_pairs.append((hash_dict[file_hash], filename))
+            duplicates.setdefault(file_hash, []).append(filename)
         else:
             hash_dict[file_hash] = filename
+            duplicates.setdefault(file_hash, []).append(filename)
 
-    if identical_pairs:
-        print("Identical file pairs found:")
-        for pair in identical_pairs:
-            print(f"{pair[0]} <==> {pair[1]}")
-    else:
+    found = False
+    for file_hash, file_list in duplicates.items():
+        if len(file_list) > 1:
+            found = True
+            print("\nIdentical files found:")
+            for idx, fname in enumerate(file_list, 1):
+                print(f"  {idx}: {fname}")
+
+            if delete_mode:
+                while True:
+                    try:
+                        keep_idx = int(
+                            input(f"Select the number of the file to keep (1-{len(file_list)}): ")
+                        )
+                        if 1 <= keep_idx <= len(file_list):
+                            break
+                        else:
+                            print("Invalid selection. Try again.")
+                    except ValueError:
+                        print("Please enter a valid number.")
+
+                for idx, fname in enumerate(file_list, 1):
+                    if idx != keep_idx:
+                        try:
+                            os.remove(os.path.join(directory, fname))
+                            print(f"Deleted: {fname}")
+                        except Exception as e:
+                            print(f"Error deleting {fname}: {e}")
+                print(f"Kept: {file_list[keep_idx-1]}")
+    if not found:
         print("No identical files found.")
 
 
@@ -200,6 +227,12 @@ def main():
     parser.add_argument(
         "-d", "--duplicates", action="store_true", help="Find identical files in the folder"
     )
+    parser.add_argument(
+        "-x",
+        "--delete-duplicates",
+        action="store_true",
+        help="Interactively delete duplicates, keeping only one file per group",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
     # No need to add -h manually; argparse does this automatically
 
@@ -209,7 +242,9 @@ def main():
     if not directory:
         directory = input("Please input your path: ")
 
-    if args.duplicates:
+    if args.delete_duplicates:
+        find_identical_files(directory, delete_mode=True)
+    elif args.duplicates:
         find_identical_files(directory)
     else:
         rename_pdfs_in_directory(directory, verbose=args.verbose)
