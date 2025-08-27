@@ -1,6 +1,9 @@
 # PDFs-AI-rename
 
-#How to use this script
+# What?
+A script to rename PDF invoices by PDF content. The PDF is converted to PNG before it is sent to
+ChatGPT for content parsing.
+
 
 ## Install poppler (to convert PDFs to PNGs)
 On windows easiest to download the latest binaries packaged by
