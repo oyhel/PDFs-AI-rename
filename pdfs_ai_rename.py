@@ -1,114 +1,270 @@
 import os
-import tiktoken
-from PyPDF2 import PdfReader
-from openai import OpenAI
 import re
 import time
+import base64
+import requests
+import sys
+import hashlib
+import argparse
+from pdf2image import convert_from_path
+import tiktoken
 
-client = OpenAI()
+# Use environment variable for API key
+API_KEY = os.environ.get("OPENAI_API_KEY")
+MAX_LENGTH = 15000
 
-max_length = 15000
+# GPT-4o pricing (as of June 2024, update as needed)
+COST_PER_1K_INPUT_TOKENS = 0.005
+COST_PER_1K_OUTPUT_TOKENS = 0.015
 
 
-def get_new_filename_from_openai(pdf_content):
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        # messages=[
-        #    {"role": "system", "content": "You are a helpful assistant designed to output JSON. \
-        #      You are renaming PDF files to help an accountant. Please scan the content of the pdf \
-        #      and rename the files using the follwing format: <date of purchase>_<name of company that sold the product>_<what was purchased> \
-        #      reply with a filename that consists only of English characters, numbers, and underscores, \
-        #     and is no longer than 150 characters. Do not include characters outside of these, as the \
-        #     system may crash. Do not reply in JSON format, just reply with text. The date should be in the format of YYYY-MM-DD. \
-        #     Note that the product is either in Norwegian or English. If there are more than one product and you are not \
-        #     able to find out what was purchased, return the date and company."},
-        #    {"role": "user", "content": pdf_content}
-        # ]
-        messages=[
+def get_new_filename_from_openai(pdf_content, verbose=False):
+    """
+    Uses GPT-4o to suggest a new filename from extracted PDF text.
+    """
+    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
             {
                 "role": "system",
-                "content": "Du er en hjelpsom assistent deisgnet for å returnere JSON output. Du hjelper en en regnskapsfører med å endre navn på PDF-filer \
-             som inneholder kvitteringer fra diverse kjøp. Vennligst les gjennom PDF-filen og endre navn på filen. Filnavnet skal være \
-             på formen <dato for kjøp>_<firma som solgte varen>_<hva som ble kjøpt>. \
-             Svar på forespørselen med et filnavn som kun inneholder bokstaver fra det engelske alfabetet, tall og understrek. \
-             Filnavnet skal ikke være lenger enn 150 tegn. Ikke inkluder tegn utover disse. \
-             Ikke svar med JSON format, svar kun med tekst. Dato skal være på formen YYYY-MM-DD. \
-             Hvis det er flere enn ett produkt på kvitteringen, velg en kategori som innebefatter flest av disse produktene.\
-             Merk at kvitteringene hovedsakelig skal være fra året 2024.",
+                "content": (
+                    "Du er en hjelpsom assistent designet for å returnere JSON output."
+                    "Du hjelper en en regnskapsfører med å endre navn på PDF-filer som inneholder kvitteringer."
+                    "Filnavnet skal være på formen <YYYY-MM-DD>_<firma>_<produkt>."
+                    "Svar kun med tekst, ikke JSON. Bruk kun engelske bokstaver, tall og understrek."
+                    "Maks 150 tegn. Hvis flere produkter, velg en kategori som dekker flest."
+                    "Kvitteringene er hovedsakelig fra inneværende år."
+                ),
             },
             {"role": "user", "content": pdf_content},
         ],
+    }
+
+    start_time = time.time()
+    response = requests.post(
+        "https://api.openai.com/v1/chat/completions", headers=headers, json=payload
     )
-    initial_filename = response.choices[0].message.content
-    filename = validate_and_trim_filename(initial_filename)
-    return filename
+    elapsed = time.time() - start_time
+    response_json = response.json()
+    initial_filename = response_json["choices"][0]["message"]["content"].strip()
+    validated_filename = validate_and_trim_filename(initial_filename)
+
+    # Verbose info
+    if verbose:
+        usage = response_json.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+        input_cost = (input_tokens / 1000) * COST_PER_1K_INPUT_TOKENS
+        output_cost = (output_tokens / 1000) * COST_PER_1K_OUTPUT_TOKENS
+        total_cost = input_cost + output_cost
+        print(f"[VERBOSE] Filename query:")
+        print(f"  Input tokens: {input_tokens}")
+        print(f"  Output tokens: {output_tokens}")
+        print(f"  Total tokens: {total_tokens}")
+        print(f"  Time consumed: {elapsed:.2f} seconds")
+        print(f"  Estimated cost: ${total_cost:.6f}")
+
+    return validated_filename
 
 
 def validate_and_trim_filename(initial_filename):
-    allowed_chars = r"[a-zA-Z0-9_]"
-
-    if not initial_filename:
-        timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-        return f"empty_file_{timestamp}"
-
-    if re.match("^[A-Za-z0-9_]$", initial_filename):
-        return initial_filename if len(initial_filename) <= 100 else initial_filename[:100]
-    else:
-        cleaned_filename = re.sub("^[A-Za-z0-9_]$", "", initial_filename)
-        return cleaned_filename if len(cleaned_filename) <= 100 else cleaned_filename[:100]
+    if not initial_filename or initial_filename.lower() in ["", "unknown", "empty"]:
+        return None
+    cleaned_filename = re.sub(r"[^A-Za-z0-9_]", "_", initial_filename)
+    return cleaned_filename[:100] if len(cleaned_filename) > 100 else cleaned_filename
 
 
-def rename_pdfs_in_directory(directory):
-    pdf_contents = []
+def rename_pdfs_in_directory(directory, verbose=False):
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
     files.sort(key=lambda x: os.path.getmtime(os.path.join(directory, x)), reverse=True)
+
     for filename in files:
         if filename.endswith(".pdf"):
             filepath = os.path.join(directory, filename)
-            print(f"Reading file {filepath}")
-            pdf_content = pdfs_to_text_string(filepath)
-            print(f"CONTENT IS: {pdf_content}")
-            new_file_name = get_new_filename_from_openai(pdf_content)
-            if new_file_name in [f for f in os.listdir(directory) if f.endswith(".pdf")]:
+            print(f"Processing file: {filepath}")
+            pdf_content = pdfs_to_text_string(filepath, verbose=verbose)
+            print(f"CONTENT PREVIEW: {pdf_content[:200]}...")
+            new_file_name = get_new_filename_from_openai(pdf_content, verbose=verbose)
+
+            if not new_file_name:
+                print(f"Skipping {filename}: no valid info for renaming.")
+                continue
+
+            if new_file_name + ".pdf" in files:
                 print(f"The new filename '{new_file_name}' already exists.")
                 new_file_name += "_01"
 
             new_filepath = os.path.join(directory, new_file_name + ".pdf")
             try:
                 os.rename(filepath, new_filepath)
-                print(f"File renamed to {new_filepath}")
+                print(f"Renamed file to: {new_filepath}")
             except Exception as e:
-                print(f"An error occurred while renaming the file: {e}")
+                print(f"Error renaming file: {e}")
 
 
-def pdfs_to_text_string(filepath):
-    with open(filepath, "rb") as file:
-        reader = PdfReader(file)
-        content = reader.pages[0].extract_text()
-        if not content.strip():
-            content = "Content is empty or contains only whitespace."
-        encoding = tiktoken.get_encoding("cl100k_base")
-        num_tokens = len(encoding.encode(content))
-        if num_tokens > max_length:
-            content = content_token_cut(content, num_tokens, max_length)
-        return content
+def pdfs_to_text_string(filepath, verbose=False):
+    """
+    Converts PDF to PNG images and sends them to GPT-4o for OCR using Base64-encoded images.
+    """
+    images = convert_from_path(filepath, dpi=600)
+    content_list = []
+
+    for img in images:
+        from io import BytesIO
+
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        encoded_image = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Extract all text from this image."},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded_image}"},
+                        },
+                    ],
+                }
+            ],
+            "max_completion_tokens": 3000,
+        }
+
+        start_time = time.time()
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions", headers=headers, json=payload
+        )
+        elapsed = time.time() - start_time
+        resp_json = response.json()
+        ocr_text = resp_json["choices"][0]["message"]["content"].strip()
+        content_list.append(ocr_text)
+
+        if verbose:
+            usage = resp_json.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+            input_cost = (input_tokens / 1000) * COST_PER_1K_INPUT_TOKENS
+            output_cost = (output_tokens / 1000) * COST_PER_1K_OUTPUT_TOKENS
+            total_cost = input_cost + output_cost
+            print(f"[VERBOSE] OCR query:")
+            print(f"  Input tokens: {input_tokens}")
+            print(f"  Output tokens: {output_tokens}")
+            print(f"  Total tokens: {total_tokens}")
+            print(f"  Time consumed: {elapsed:.2f} seconds")
+            print(f"  Estimated cost: ${total_cost:.6f}")
+
+    content = "\n".join(content_list)
+    if not content.strip():
+        content = "Content is empty or contains only whitespace."
+
+    # Token length check
+    encoding = tiktoken.get_encoding("cl100k_base")
+    num_tokens = len(encoding.encode(content))
+    if num_tokens > MAX_LENGTH:
+        content = content_token_cut(content, num_tokens, MAX_LENGTH)
+
+    return content
 
 
 def content_token_cut(content, num_tokens, max_length):
     content_length = len(content)
     while num_tokens > max_length:
-        ratio = num_tokens / max_length
-        new_length = int(content_length * num_tokens * (90 / 100))
+        new_length = int(content_length * 0.9)
         content = content[:new_length]
         num_tokens = len(tiktoken.get_encoding("cl100k_base").encode(content))
     return content
 
 
+def find_identical_files(directory, delete_mode=False):
+    """
+    Finds and lists groups of identical files in the given directory, regardless of filename.
+    If delete_mode is True, lets the user select which file to keep and deletes the others.
+    """
+    files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
+    hash_dict = {}
+    duplicates = {}
+
+    for filename in files:
+        filepath = os.path.join(directory, filename)
+        with open(filepath, "rb") as f:
+            file_hash = hashlib.md5(f.read()).hexdigest()
+        if file_hash in hash_dict:
+            duplicates.setdefault(file_hash, []).append(filename)
+        else:
+            hash_dict[file_hash] = filename
+            duplicates.setdefault(file_hash, []).append(filename)
+
+    found = False
+    for file_hash, file_list in duplicates.items():
+        if len(file_list) > 1:
+            found = True
+            print("\nIdentical files found:")
+            for idx, fname in enumerate(file_list, 1):
+                print(f"  {idx}: {fname}")
+
+            if delete_mode:
+                while True:
+                    try:
+                        keep_idx = int(
+                            input(f"Select the number of the file to keep (1-{len(file_list)}): ")
+                        )
+                        if 1 <= keep_idx <= len(file_list):
+                            break
+                        else:
+                            print("Invalid selection. Try again.")
+                    except ValueError:
+                        print("Please enter a valid number.")
+
+                for idx, fname in enumerate(file_list, 1):
+                    if idx != keep_idx:
+                        try:
+                            os.remove(os.path.join(directory, fname))
+                            print(f"Deleted: {fname}")
+                        except Exception as e:
+                            print(f"Error deleting {fname}: {e}")
+                print(f"Kept: {file_list[keep_idx-1]}")
+    if not found:
+        print("No identical files found.")
+
+
 def main():
-    directory = ""  # Replace with your PDF directory path
-    if directory == "":
-        directory = input("Please input your path:")
-    rename_pdfs_in_directory(directory)
+    parser = argparse.ArgumentParser(
+        description="PDF AI Rename and Duplicate Finder",
+        add_help=True,  # Enables -h/--help by default
+    )
+    parser.add_argument("-p", "--path", type=str, help="Path to search for PDFs")
+    parser.add_argument(
+        "-d", "--duplicates", action="store_true", help="Find identical files in the folder"
+    )
+    parser.add_argument(
+        "-x",
+        "--delete-duplicates",
+        action="store_true",
+        help="Interactively delete duplicates, keeping only one file per group",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
+    # No need to add -h manually; argparse does this automatically
+
+    args = parser.parse_args()
+
+    directory = args.path
+    if not directory:
+        directory = input("Please input your path: ")
+
+    if args.delete_duplicates:
+        find_identical_files(directory, delete_mode=True)
+    elif args.duplicates:
+        find_identical_files(directory)
+    else:
+        rename_pdfs_in_directory(directory, verbose=args.verbose)
 
 
 if __name__ == "__main__":
